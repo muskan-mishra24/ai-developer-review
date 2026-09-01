@@ -1,96 +1,283 @@
 /**
- * RAG (Retrieval-Augmented Generation) Service
- * Handles embeddings and vector-based code search
+ * RAG Service
+ * Implements Retrieval-Augmented Generation for code Q&A
  */
+
+const llmService = require('./llmService')
+const embeddingsService = require('./embeddingsService')
+const vectorDatabaseService = require('./vectorDatabaseService')
+const codeParserService = require('./codeParserService')
 
 const ragService = {
   /**
-   * Generate embeddings for code
-   * @param {String} code - The code to embed
-   * @returns {Promise<Array>} Vector embedding
+   * Index repository code for RAG
+   * @param {String} repositoryId - Repository ID
+   * @param {Array} files - Code files to index
+   * @returns {Promise<Object>} Indexing results
    */
-  generateEmbedding: async (code) => {
+  indexRepository: async (repositoryId, files) => {
     try {
-      // TODO: Integrate with embeddings model (text-embedding-3-small)
-      const embedding = [];
-      return embedding;
+      const results = {
+        indexed: 0,
+        failed: 0,
+        errors: []
+      }
+
+      // Split code into chunks
+      const chunks = []
+      for (const file of files) {
+        const fileChunks = ragService.splitCode(file.code, file.file, file.language)
+        chunks.push(...fileChunks)
+      }
+
+      // Generate embeddings for each chunk
+      for (const chunk of chunks) {
+        try {
+          const embedding = await embeddingsService.generateEmbedding(chunk.code)
+
+          await vectorDatabaseService.storeEmbedding({
+            repositoryId,
+            fileName: chunk.file,
+            codeSnippet: chunk.code,
+            embedding,
+            language: chunk.language,
+            lineStart: chunk.lineStart,
+            lineEnd: chunk.lineEnd
+          })
+
+          results.indexed++
+        } catch (error) {
+          results.failed++
+          results.errors.push(`Failed to index ${chunk.file}: ${error.message}`)
+          console.error(`Error indexing ${chunk.file}:`, error.message)
+        }
+      }
+
+      return results
     } catch (error) {
-      console.error('Error generating embedding:', error);
-      throw error;
+      console.error('Error indexing repository:', error.message)
+      throw error
     }
   },
 
   /**
-   * Store code embeddings in vector database
-   * @param {String} codeId - Unique identifier for the code
-   * @param {Array} embedding - Vector embedding
-   * @param {Object} metadata - Additional metadata
-   * @returns {Promise<void>}
+   * Split code into overlapping chunks
+   * @param {String} code - Code content
+   * @param {String} fileName - File name
+   * @param {String} language - Programming language
+   * @param {Number} chunkSize - Lines per chunk
+   * @param {Number} overlap - Overlapping lines
+   * @returns {Array} Code chunks
    */
-  storeEmbedding: async (codeId, embedding, metadata) => {
+  splitCode: (code, fileName, language = 'unknown', chunkSize = 50, overlap = 10) => {
+    const lines = code.split('\n')
+    const chunks = []
+    let lineNum = 1
+
+    for (let i = 0; i < lines.length; i += chunkSize - overlap) {
+      const end = Math.min(i + chunkSize, lines.length)
+      const chunkLines = lines.slice(i, end)
+
+      if (chunkLines.length > 0) {
+        chunks.push({
+          code: chunkLines.join('\n'),
+          file: fileName,
+          language,
+          lineStart: lineNum,
+          lineEnd: lineNum + chunkLines.length - 1
+        })
+      }
+
+      lineNum += chunkSize - overlap
+    }
+
+    return chunks
+  },
+
+  /**
+   * Answer question about codebase using RAG
+   * @param {String} question - User question
+   * @param {String} repositoryId - Repository ID
+   * @returns {Promise<Object>} Answer with context
+   */
+  answerQuestion: async (question, repositoryId) => {
     try {
-      // TODO: Store in PostgreSQL with pgvector extension
-      console.log(`Storing embedding for code ${codeId}`);
+      // Generate embedding for question
+      const questionEmbedding = await embeddingsService.generateEmbedding(question)
+
+      // Search for relevant code
+      const relevantCode = await vectorDatabaseService.search(
+        question,
+        questionEmbedding,
+        repositoryId,
+        5
+      )
+
+      if (relevantCode.length === 0) {
+        return {
+          answer: "I couldn't find relevant code snippets to answer your question. Try asking about specific functions or features in the codebase.",
+          sources: [],
+          confidence: 0
+        }
+      }
+
+      // Build context from relevant code
+      const context = ragService.buildContext(relevantCode)
+
+      // Generate answer using LLM
+      const prompt = `Based on the following code context from a software project, answer this question: "${question}"
+
+Context:
+${context}
+
+Provide a clear, concise answer based only on the code provided.`
+
+      const answer = await llmService.generateCompletion(prompt, 1000)
+
+      return {
+        answer,
+        sources: relevantCode.map(r => ({
+          file: r.file_name,
+          similarity: r.similarity,
+          lineStart: r.line_start,
+          lineEnd: r.line_end
+        })),
+        confidence: Math.min(relevantCode[0]?.similarity || 0, 100)
+      }
     } catch (error) {
-      console.error('Error storing embedding:', error);
-      throw error;
+      console.error('Error answering question:', error.message)
+      throw error
     }
   },
 
   /**
-   * Search similar code snippets
-   * @param {String} query - Code or description to search for
-   * @param {Number} limit - Maximum number of results
+   * Build context string from code snippets
+   * @param {Array} snippets - Code snippets
+   * @returns {String} Formatted context
+   */
+  buildContext: (snippets) => {
+    let context = ''
+
+    snippets.forEach((snippet, index) => {
+      context += `\n--- Code Snippet ${index + 1} ---`
+      context += `\nFile: ${snippet.file_name}`
+      context += `\nLanguage: ${snippet.language}`
+      context += `\nLines: ${snippet.line_start}-${snippet.line_end}`
+      context += `\nRelevance: ${snippet.similarity}%`
+      context += `\n\`\`\`${snippet.language || 'text'}\n`
+      context += snippet.code_snippet
+      context += `\n\`\`\`\n`
+    })
+
+    return context
+  },
+
+  /**
+   * Find code similar to provided snippet
+   * @param {String} codeSnippet - Code to find similar code for
+   * @param {String} repositoryId - Repository ID
+   * @param {Number} limit - Number of results
    * @returns {Promise<Array>} Similar code snippets
    */
-  searchSimilarCode: async (query, limit = 5) => {
+  findSimilarCode: async (codeSnippet, repositoryId, limit = 5) => {
     try {
-      // TODO: Implement semantic search using pgvector
-      const results = [];
-      return results;
+      const embedding = await embeddingsService.generateEmbedding(codeSnippet)
+      const similarCode = await vectorDatabaseService.search(
+        codeSnippet,
+        embedding,
+        repositoryId,
+        limit
+      )
+
+      return similarCode.map(code => ({
+        file: code.file_name,
+        similarity: code.similarity,
+        code: code.code_snippet,
+        language: code.language
+      }))
     } catch (error) {
-      console.error('Error searching similar code:', error);
-      throw error;
+      console.error('Error finding similar code:', error.message)
+      throw error
     }
   },
 
   /**
-   * Generate context for LLM from code snippets
-   * @param {Array} codeSnippets - Retrieved code snippets
-   * @returns {String} Formatted context for LLM
+   * Get code suggestions based on query
+   * @param {String} query - Search query
+   * @param {String} repositoryId - Repository ID
+   * @returns {Promise<Array>} Code suggestions
    */
-  generateContext: (codeSnippets) => {
+  getSuggestions: async (query, repositoryId) => {
     try {
-      let context = 'Here are relevant code examples:\n\n';
-      codeSnippets.forEach((snippet, index) => {
-        context += `Example ${index + 1}:\n${snippet.code}\n\n`;
-      });
-      return context;
+      const embedding = await embeddingsService.generateEmbedding(query)
+      const suggestions = await vectorDatabaseService.search(
+        query,
+        embedding,
+        repositoryId,
+        10
+      )
+
+      return suggestions.map(s => ({
+        file: s.file_name,
+        relevance: s.similarity,
+        snippet: s.code_snippet.substring(0, 200) + '...',
+        lines: `${s.line_start}-${s.line_end}`
+      }))
     } catch (error) {
-      console.error('Error generating context:', error);
-      throw error;
+      console.error('Error getting suggestions:', error.message)
+      throw error
     }
   },
 
   /**
-   * Answer codebase questions using RAG
-   * @param {String} question - Question about the codebase
-   * @param {String} repositoryId - Repository to search in
-   * @returns {Promise<String>} Answer with context
+   * Explain code using RAG context
+   * @param {String} filePath - File path to explain
+   * @param {String} repositoryId - Repository ID
+   * @returns {Promise<String>} Explanation
    */
-  answerCodebaseQuestion: async (question, repositoryId) => {
+  explainCodeInContext: async (filePath, repositoryId) => {
     try {
-      // TODO: Implement RAG pipeline
-      // 1. Search for relevant code snippets
-      // 2. Generate context
-      // 3. Send to LLM with context
-      const answer = '';
-      return answer;
+      // Get similar code for context
+      const relevantCode = await vectorDatabaseService.getRepositoryEmbeddings(repositoryId)
+      const thisFile = relevantCode.filter(c => c.file_name === filePath).slice(0, 3)
+
+      if (thisFile.length === 0) {
+        return 'File not found in repository index'
+      }
+
+      const context = ragService.buildContext(thisFile)
+      const prompt = `Provide a detailed explanation of what this code does and how it fits into the overall architecture:
+
+${context}`
+
+      return await llmService.generateCompletion(prompt, 1500)
     } catch (error) {
-      console.error('Error answering codebase question:', error);
-      throw error;
+      console.error('Error explaining code:', error.message)
+      throw error
+    }
+  },
+
+  /**
+   * Initialize RAG system
+   */
+  initialize: async () => {
+    try {
+      console.log('Initializing RAG system...')
+      await vectorDatabaseService.initialize()
+      await vectorDatabaseService.createTable()
+      const embeddingsAvailable = await embeddingsService.isAvailable()
+      
+      if (!embeddingsAvailable) {
+        console.warn('Embeddings service not available - check OpenAI API key')
+      }
+
+      console.log('RAG system initialized successfully')
+      return true
+    } catch (error) {
+      console.error('Error initializing RAG:', error.message)
+      return false
     }
   }
-};
+}
 
-module.exports = ragService;
+module.exports = ragService
