@@ -7,8 +7,7 @@ const helmet = require('helmet');
 // Import routes
 const authRoutes = require('./backend/routes/auth');
 const repositoryRoutes = require('./backend/routes/repositories');
-const reviewRoutes = require('./backend/routes/reviews');
-
+const reviewRoutes = require('./backend/routes/reviews');const analysisRoutes = require('./backend/routes/analysis')
 // Import middleware
 const errorHandler = require('./backend/middleware/errorHandler');
 const { authenticate } = require('./backend/middleware/auth');
@@ -34,8 +33,7 @@ app.get('/health', (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/repositories', authenticate, repositoryRoutes);
-app.use('/api/reviews', authenticate, reviewRoutes);
-
+app.use('/api/reviews', authenticate, reviewRoutes);app.use('/api/analysis', authenticate, analysisRoutes)
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
