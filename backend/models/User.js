@@ -19,7 +19,6 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: true,
       minlength: 6,
       select: false
     },
@@ -30,6 +29,18 @@ const userSchema = new mongoose.Schema(
     lastName: {
       type: String,
       trim: true
+    },
+    name: {
+      type: String,
+      trim: true
+    },
+    avatar: {
+      type: String
+    },
+    githubId: {
+      type: Number,
+      unique: true,
+      sparse: true
     },
     githubToken: {
       type: String,

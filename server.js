@@ -10,6 +10,7 @@ const repositoryRoutes = require('./backend/routes/repositories');
 const reviewRoutes = require('./backend/routes/reviews');
 const analysisRoutes = require('./backend/routes/analysis')
 const ragRoutes = require('./backend/routes/rag')
+const githubRoutes = require('./backend/routes/github')
 // Import middleware
 const errorHandler = require('./backend/middleware/errorHandler');
 const { authenticate } = require('./backend/middleware/auth');
@@ -19,6 +20,12 @@ const ragService = require('./backend/services/ragService');
 
 // Create Express app
 const app = express();
+
+// Middleware for webhook raw body capture
+app.use('/api/github/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body;
+  express.json()(req, res, next);
+});
 
 // Middleware
 app.use(helmet());
@@ -41,6 +48,7 @@ app.use('/api/repositories', authenticate, repositoryRoutes);
 app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/analysis', authenticate, analysisRoutes)
 app.use('/api/rag', authenticate, ragRoutes)
+app.use('/api/github', githubRoutes)
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });

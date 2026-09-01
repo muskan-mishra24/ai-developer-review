@@ -23,7 +23,23 @@ const repositorySchema = new mongoose.Schema(
     },
     githubId: {
       type: String,
-      unique: true
+      unique: true,
+      sparse: true
+    },
+    githubFullName: {
+      type: String,
+      unique: true,
+      sparse: true
+    },
+    githubOwner: {
+      type: String
+    },
+    githubRepo: {
+      type: String
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false
     },
     language: {
       type: String
@@ -32,7 +48,14 @@ const repositorySchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    filesCount: {
+      type: Number,
+      default: 0
+    },
     lastAnalyzedAt: {
+      type: Date
+    },
+    lastSyncedAt: {
       type: Date
     },
     isActive: {
